@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>POG Game</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/ammojs3@0.0.11/dist/ammo.wasm.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            touch-action: none;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background: #000;
+            font-family: Arial, sans-serif;
+        }
+        
+        #resetBtn {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 15px 30px;
+            background: #f44336;
+            color: white;
+            border: none;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 18px;
+            z-index: 1000;
+            backdrop-filter: blur(10px);
+            border: 2px solid rgba(255,255,255,0.3);
+        }
+        
+        #resetBtn:active {
+            transform: translateX(-50%) scale(0.95);
+        }
+        
+        #score {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            font-size: 24px;
+            font-weight: bold;
+            background: rgba(0,0,0,0.7);
+            padding: 10px 20px;
+            border-radius: 20px;
+            z-index: 1000;
+            backdrop-filter: blur(10px);
+        }
+        
+        #powerBar {
+            position: absolute;
+            bottom: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 200px;
+            height: 20px;
+            background: rgba(0,0,0,0.5);
+            border-radius: 10px;
+            overflow: hidden;
+            display: none;
+            z-index: 1000;
+            border: 2px solid rgba(255,255,255,0.3);
+        }
+        
+        #powerFill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #4CAF50, #FFEB3B, #FF5722);
+            border-radius: 8px;
+            transition: width 0.1s;
+        }
+        
+        #powerText {
+            position: absolute;
+            bottom: 125px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            font-size: 16px;
+            display: none;
+            z-index: 1000;
+            background: rgba(0,0,0,0.7);
+            padding: 5px 15px;
+            border-radius: 15px;
+        }
+        
+        #swipeArea {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 500;
+        }
+        
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 24px;
+            text-align: center;
+            z-index: 1000;
+            background: rgba(0,0,0,0.8);
+            padding: 30px;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">Загружаю...</div>
+    
+    <div id="score" style="display: none;">0/8</div>
+    <div id="powerBar" style="display: none;">
+        <div id="powerFill"></div>
+    </div>
+    <div id="powerText" style="display: none;">СИЛА: 0%</div>
+    <button id="resetBtn" style="display: none;" onclick="resetScene()">СНАЧАЛА</button>
+    
+    <div id="swipeArea"></div>
+
+    <script>
+        let scene, camera, renderer;
+        let pogs = [], slammer = null;
+        let physicsWorld;
+        let gameStarted = false;
+        let isDragging = false;
+        let startX = 0, startY = 0;
+        let swipePower = 0;
+        let initialSlammerX = 0;
+        let slammerWobble = 0;
+        
+        // Текстуры
+        let floorTexture, monsterTextures = [], logoTexure;
+        let texturesLoaded = 0;
+        let totalTextures = 6; // пол + 4 текстуры для фишек + лого
+        
+        // Анимации исчезновения
+        let disappearingPogs = [];
+        
+        // Улучшенная система камеры
+        let cameraController = {
+            mode: 'FOLLOW',
+            transition: {
+                active: false,
+                startTime: 0,
+                duration: 2500,
+                startPosition: new THREE.Vector3(),
+                startLookAt: new THREE.Vector3(),
+                targetPosition: new THREE.Vector3(0, 12, 8),
+                targetLookAt: new THREE.Vector3(0, 2, 0)
+            },
+            follow: {
+                target: null,
+                offset: new THREE.Vector3(4, 6, 6),
+                smoothness: 0.05,
+                minHeight: 4,
+                maxDistance: 20
+            },
+            bounds: {
+                min: new THREE.Vector3(-15, 2, -15),
+                max: new THREE.Vector3(15, 25, 15)
+            }
+        };
+
+        function loadTextures() {
+            const textureLoader = new THREE.TextureLoader();
+            
+            // Загружаем текстуру пола
+            floorTexture = textureLoader.load(
+                'https://static.vecteezy.com/system/resources/previews/013/750/159/non_2x/stone-wall-from-bricks-rock-game-background-in-cartoon-style-seamless-textured-surface-ui-game-asset-road-or-floor-material-illustration-vector.jpg',
+                onTextureLoaded,
+                undefined,
+                onTextureError
+            );
+            
+            floorTexture.wrapS = THREE.RepeatWrapping;
+            floorTexture.wrapT = THREE.RepeatWrapping;
+            floorTexture.repeat.set(6, 6);
+            
+            // Загружаем 4 текстуры для фишек
+            for (let i = 1; i <= 4; i++) {
+                const texture = textureLoader.load(
+                    `${i}.jpg`,
+                    onTextureLoaded,
+                    undefined,
+                    onTextureError
+                );
+                monsterTextures.push(texture);
+            }
+            
+            // Загружаем лого для обратной стороны ВСЕХ фишек
+            logoTexure = textureLoader.load(
+                'logo.jpg',
+                onTextureLoaded,
+                undefined,
+                onTextureError
+            );
+        }
+
+        function onTextureLoaded() {
+            texturesLoaded++;
+            if (texturesLoaded === totalTextures) {
+                startGame();
+            }
+        }
+
+        function onTextureError(error) {
+            console.error('Error loading texture:', error);
+            texturesLoaded++;
+            if (texturesLoaded === totalTextures) {
+                startGame();
+            }
+        }
+
+        function startGame() {
+            initThree();
+            initPhysics(Ammo);
+            createScene();
+            createPogs();
+            createSlammer();
+            initTouchControls();
+            animate();
+            
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('score').style.display = 'block';
+            document.getElementById('resetBtn').style.display = 'block';
+        }
+
+        Ammo().then(function(Ammo) {
+            loadTextures();
+        });
+
+        function initThree() {
+            scene = new THREE.Scene();
+            
+            // Простой синий фон без параллакса
+            scene.background = new THREE.Color(0x87CEEB);
+            scene.fog = new THREE.Fog(0x87CEEB, 10, 50);
+            
+            const aspect = window.innerWidth / window.innerHeight;
+            camera = new THREE.PerspectiveCamera(75, aspect, 0.1, 1000);
+            
+            renderer = new THREE.WebGLRenderer({ 
+                antialias: true,
+                powerPreference: "high-performance"
+            });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            document.body.appendChild(renderer.domElement);
+
+            camera.position.set(8, 6, 10);
+            camera.lookAt(0, 2, 0);
+        }
+
+        function initPhysics(Ammo) {
+            const collisionConfiguration = new Ammo.btDefaultCollisionConfiguration();
+            const dispatcher = new Ammo.btCollisionDispatcher(collisionConfiguration);
+            const solver = new Ammo.btSequentialImpulseConstraintSolver();
+            const broadphase = new Ammo.btDbvtBroadphase();
+            
+            physicsWorld = new Ammo.btDiscreteDynamicsWorld(dispatcher, broadphase, solver, collisionConfiguration);
+            physicsWorld.setGravity(new Ammo.btVector3(0, -30, 0));
+        }
+
+        function initTouchControls() {
+            const swipeArea = document.getElementById('swipeArea');
+            
+            swipeArea.addEventListener('touchstart', function(e) {
+                e.preventDefault();
+                startX = e.touches[0].clientX;
+                startY = e.touches[0].clientY;
+                initialSlammerX = slammer.position.x;
+                isDragging = true;
+                
+                // Показываем шкалу силы
+                document.getElementById('powerBar').style.display = 'block';
+                document.getElementById('powerText').style.display = 'block';
+            });
+            
+            swipeArea.addEventListener('touchmove', function(e) {
+                if (!isDragging) return;
+                e.preventDefault();
+                
+                const currentX = e.touches[0].clientX;
+                const currentY = e.touches[0].clientY;
+                const deltaX = currentX - startX;
+                const deltaY = currentY - startY;
+                
+                // Горизонтальное движение - сдвиг биты с покачиванием
+                if (Math.abs(deltaX) > 10) {
+                    const newX = initialSlammerX + (deltaX / 100) * 3;
+                    slammer.position.x = THREE.MathUtils.clamp(newX, -3, 3);
+                    
+                    // Небольшое покачивание при движении
+                    slammerWobble = Math.sin(Date.now() * 0.01) * 0.1;
+                    slammer.rotation.z = slammerWobble;
+                    
+                    if (slammer.userData.physicsBody && slammer.userData.static) {
+                        const transform = new Ammo.btTransform();
+                        slammer.userData.physicsBody.getMotionState().getWorldTransform(transform);
+                        transform.getOrigin().setX(slammer.position.x);
+                        slammer.userData.physicsBody.getMotionState().setWorldTransform(transform);
+                    }
+                }
+                
+                // Вертикальное движение - сила удара
+                if (deltaY > 0) {
+                    swipePower = Math.min(deltaY / 150, 2.0);
+                    
+                    // Обновляем шкалу силы
+                    const powerPercent = Math.round(swipePower * 50);
+                    document.getElementById('powerFill').style.width = powerPercent + '%';
+                    document.getElementById('powerText').textContent = `СИЛА: ${powerPercent}%`;
+                }
+            });
+            
+            swipeArea.addEventListener('touchend', function(e) {
+                if (!isDragging) return;
+                e.preventDefault();
+                
+                if (swipePower > 0.3) {
+                    throwSlammerWithPower(swipePower);
+                }
+                
+                isDragging = false;
+                swipePower = 0;
+                slammerWobble = 0;
+                slammer.rotation.z = 0;
+                
+                // Скрываем шкалу силы
+                document.getElementById('powerBar').style.display = 'none';
+                document.getElementById('powerText').style.display = 'none';
+            });
+            
+            // Desktop controls
+            swipeArea.addEventListener('mousedown', function(e) {
+                e.preventDefault();
+                startX = e.clientX;
+                startY = e.clientY;
+                initialSlammerX = slammer.position.x;
+                isDragging = true;
+                
+                document.getElementById('powerBar').style.display = 'block';
+                document.getElementById('powerText').style.display = 'block';
+            });
+            
+            swipeArea.addEventListener('mousemove', function(e) {
+                if (!isDragging) return;
+                e.preventDefault();
+                
+                const deltaX = e.clientX - startX;
+                const deltaY = e.clientY - startY;
+                
+                if (Math.abs(deltaX) > 10) {
+                    const newX = initialSlammerX + (deltaX / 100) * 3;
+                    slammer.position.x = THREE.MathUtils.clamp(newX, -3, 3);
+                    
+                    slammerWobble = Math.sin(Date.now() * 0.01) * 0.1;
+                    slammer.rotation.z = slammerWobble;
+                    
+                    if (slammer.userData.physicsBody && slammer.userData.static) {
+                        const transform = new Ammo.btTransform();
+                        slammer.userData.physicsBody.getMotionState().getWorldTransform(transform);
+                        transform.getOrigin().setX(slammer.position.x);
+                        slammer.userData.physicsBody.getMotionState().setWorldTransform(transform);
+                    }
+                }
+                
+                if (deltaY > 0) {
+                    swipePower = Math.min(deltaY / 150, 2.0);
+                    
+                    const powerPercent = Math.round(swipePower * 50);
+                    document.getElementById('powerFill').style.width = powerPercent + '%';
+                    document.getElementById('powerText').textContent = `СИЛА: ${powerPercent}%`;
+                }
+            });
+            
+            swipeArea.addEventListener('mouseup', function(e) {
+                if (!isDragging) return;
+                e.preventDefault();
+                
+                if (swipePower > 0.3) {
+                    throwSlammerWithPower(swipePower);
+                }
+                
+                isDragging = false;
+                swipePower = 0;
+                slammerWobble = 0;
+                slammer.rotation.z = 0;
+                
+                document.getElementById('powerBar').style.display = 'none';
+                document.getElementById('powerText').style.display = 'none';
+            });
+        }
+
+        function createScene() {
+            // Пол с текстурой
+            const floorGeometry = new THREE.PlaneGeometry(30, 30);
+            const floorMaterial = new THREE.MeshPhongMaterial({ 
+                map: floorTexture,
+                shininess: 10
+            });
+            const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+            floor.rotation.x = -Math.PI / 2;
+            floor.receiveShadow = true;
+            scene.add(floor);
+
+            // Физический пол
+            const groundShape = new Ammo.btBoxShape(new Ammo.btVector3(15, 1, 15));
+            const groundTransform = new Ammo.btTransform();
+            groundTransform.setIdentity();
+            groundTransform.setOrigin(new Ammo.btVector3(0, -1, 0));
+            
+            const groundMotionState = new Ammo.btDefaultMotionState(groundTransform);
+            const groundRigidBodyInfo = new Ammo.btRigidBodyConstructionInfo(0, groundMotionState, groundShape);
+            const groundRigidBody = new Ammo.btRigidBody(groundRigidBodyInfo);
+            groundRigidBody.setFriction(0.6);
+            groundRigidBody.setRestitution(0.5);
+            physicsWorld.addRigidBody(groundRigidBody);
+
+            // Освещение
+            const ambientLight = new THREE.AmbientLight(0x404040, 0.8);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
+            directionalLight.position.set(10, 20, 5);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 2048;
+            directionalLight.shadow.mapSize.height = 2048;
+            scene.add(directionalLight);
+        }
+
+        function createPhysicsCylinder(radius, height, mass, position, isStatic = false) {
+            const shape = new Ammo.btCylinderShape(new Ammo.btVector3(radius, height/2, radius));
+            const transform = new Ammo.btTransform();
+            transform.setIdentity();
+            transform.setOrigin(new Ammo.btVector3(position.x, position.y, position.z));
+            
+            const motionState = new Ammo.btDefaultMotionState(transform);
+            const localInertia = new Ammo.btVector3(0, 0, 0);
+            
+            const actualMass = isStatic ? 0 : mass;
+            if (actualMass > 0) {
+                shape.calculateLocalInertia(actualMass, localInertia);
+            }
+            
+            const rbInfo = new Ammo.btRigidBodyConstructionInfo(actualMass, motionState, shape, localInertia);
+            const body = new Ammo.btRigidBody(rbInfo);
+            
+            body.setFriction(0.4);
+            body.setRestitution(0.7);
+            body.setDamping(0.02, 0.05);
+            body.setActivationState(4);
+            
+            physicsWorld.addRigidBody(body);
+            return body;
+        }
+
+        function createPogMaterial(textureIndex) {
+            const texture = monsterTextures[textureIndex % monsterTextures.length];
+            
+            return [
+                new THREE.MeshPhongMaterial({ 
+                    color: 0x888888,
+                    shininess: 80
+                }), // Боковая поверхность
+                new THREE.MeshPhongMaterial({ 
+                    map: logoTexure, // ВЕРХНЯЯ крышка - logo.jpg (лицевая сторона)
+                    shininess: 80
+                }), 
+                new THREE.MeshPhongMaterial({ 
+                    map: texture, // НИЖНЯЯ крышка - 1.jpg, 2.jpg, 3.jpg, 4.jpg (обратная сторона)
+                    shininess: 30
+                })
+            ];
+        }
+
+        function createPogs() {
+            pogs = [];
+            
+            const physicsBodies = [];
+            for (let i = 0; i < 8; i++) {
+                const position = new THREE.Vector3(0, 0.05 + i * 0.12, 0);
+                const physicsBody = createPhysicsCylinder(0.9, 0.1, 0, position, true);
+                physicsBodies.push(physicsBody);
+            }
+            
+            for (let i = 0; i < 8; i++) {
+                const geometry = new THREE.CylinderGeometry(1, 1, 0.1, 32);
+                const materials = createPogMaterial(i);
+                const pog = new THREE.Mesh(geometry, materials);
+                
+                const position = new THREE.Vector3(0, 0.05 + i * 0.12, 0);
+                pog.position.copy(position);
+                pog.castShadow = true;
+                pog.receiveShadow = true;
+                scene.add(pog);
+                
+                pog.userData = {
+                    physicsBody: physicsBodies[i],
+                    isPog: true,
+                    flipped: false,
+                    static: true,
+                    disappearing: false,
+                    scale: 1,
+                    rotationSpeed: 0
+                };
+                
+                pogs.push(pog);
+            }
+        }
+
+        function createSlammer() {
+            const geometry = new THREE.CylinderGeometry(0.8, 0.8, 0.3, 32);
+            const material = new THREE.MeshPhongMaterial({ 
+                color: 0xff3333,
+                shininess: 100
+            });
+            slammer = new THREE.Mesh(geometry, material);
+            
+            const position = new THREE.Vector3(0, 8, 0);
+            slammer.position.copy(position);
+            slammer.castShadow = true;
+            scene.add(slammer);
+            
+            const physicsBody = createPhysicsCylinder(0.8, 0.3, 0, position, true);
+            
+            slammer.userData = {
+                physicsBody: physicsBody,
+                isSlammer: true,
+                thrown: false,
+                static: true
+            };
+        }
+
+        function activatePogs() {
+            pogs.forEach(pog => {
+                if (pog.userData.static) {
+                    const oldBody = pog.userData.physicsBody;
+                    const position = pog.position;
+                    
+                    physicsWorld.removeRigidBody(oldBody);
+                    const newBody = createPhysicsCylinder(0.9, 0.1, 1.2, position, false);
+                    
+                    pog.userData.physicsBody = newBody;
+                    pog.userData.static = false;
+                }
+            });
+        }
+
+        function startCameraTransition() {
+            cameraController.mode = 'TRANSITION';
+            cameraController.transition.active = true;
+            cameraController.transition.startTime = Date.now();
+            
+            cameraController.transition.startPosition.copy(camera.position);
+            
+            const direction = new THREE.Vector3();
+            camera.getWorldDirection(direction);
+            cameraController.transition.startLookAt.copy(camera.position).add(direction);
+        }
+
+        function updateCameraTransition() {
+            if (cameraController.mode !== 'TRANSITION') return;
+            
+            const currentTime = Date.now();
+            const elapsed = currentTime - cameraController.transition.startTime;
+            const progress = Math.min(elapsed / cameraController.transition.duration, 1);
+            
+            const easeProgress = easeOutQuint(progress);
+            
+            camera.position.lerpVectors(
+                cameraController.transition.startPosition,
+                cameraController.transition.targetPosition,
+                easeProgress
+            );
+            
+            const currentLookAt = new THREE.Vector3().lerpVectors(
+                cameraController.transition.startLookAt,
+                cameraController.transition.targetLookAt,
+                easeProgress
+            );
+            
+            camera.lookAt(currentLookAt);
+            
+            if (progress >= 1) {
+                cameraController.mode = 'STATIC';
+                cameraController.transition.active = false;
+                startDisappearingFlippedPogs();
+            }
+        }
+
+        function startDisappearingFlippedPogs() {
+            pogs.forEach(pog => {
+                if (pog.userData.flipped && !pog.userData.disappearing) {
+                    pog.userData.disappearing = true;
+                    pog.userData.scale = 1;
+                    pog.userData.rotationSpeed = (Math.random() * 2 + 1) * (Math.random() > 0.5 ? 1 : -1);
+                    disappearingPogs.push(pog);
+                }
+            });
+        }
+
+        function updateDisappearingPogs() {
+            for (let i = disappearingPogs.length - 1; i >= 0; i--) {
+                const pog = disappearingPogs[i];
+                
+                pog.userData.scale -= 0.02;
+                pog.rotation.y += pog.userData.rotationSpeed * 0.1;
+                pog.scale.setScalar(pog.userData.scale);
+                
+                if (pog.userData.scale <= 0) {
+                    scene.remove(pog);
+                    if (pog.userData.physicsBody) {
+                        physicsWorld.removeRigidBody(pog.userData.physicsBody);
+                    }
+                    disappearingPogs.splice(i, 1);
+                }
+            }
+        }
+
+        function updateCameraFollow() {
+            if (cameraController.mode !== 'FOLLOW' || !cameraController.follow.target) return;
+            
+            const target = cameraController.follow.target;
+            const desiredPosition = new THREE.Vector3();
+            
+            desiredPosition.copy(target.position).add(cameraController.follow.offset);
+            desiredPosition.y = Math.max(desiredPosition.y, cameraController.follow.minHeight);
+            desiredPosition.clamp(cameraController.bounds.min, cameraController.bounds.max);
+            
+            camera.position.lerp(desiredPosition, cameraController.follow.smoothness);
+            
+            const lookAtTarget = new THREE.Vector3(
+                target.position.x * 0.3,
+                Math.max(target.position.y, 1),
+                target.position.z * 0.3
+            );
+            
+            const currentLookAt = new THREE.Vector3();
+            camera.getWorldDirection(currentLookAt);
+            currentLookAt.add(camera.position);
+            
+            const smoothedLookAt = new THREE.Vector3();
+            smoothedLookAt.lerpVectors(currentLookAt, lookAtTarget, 0.05);
+            
+            camera.lookAt(smoothedLookAt);
+        }
+
+        function easeOutQuint(t) {
+            return 1 - Math.pow(1 - t, 5);
+        }
+
+        function throwSlammerWithPower(powerMultiplier) {
+            if (!slammer || slammer.userData.thrown) return;
+            
+            gameStarted = true;
+            slammer.userData.thrown = true;
+            
+            activatePogs();
+            
+            const oldBody = slammer.userData.physicsBody;
+            const position = slammer.position.clone();
+            physicsWorld.removeRigidBody(oldBody);
+            
+            const dynamicBody = createPhysicsCylinder(0.8, 0.3, 4, position, false);
+            
+            const basePower = 100;
+            const power = basePower * powerMultiplier;
+            const angleX = (Math.random() - 0.5) * 0.3;
+            const angleZ = (Math.random() - 0.1) * 0.5;
+            
+            const impulse = new Ammo.btVector3(
+                angleX * power, 
+                -power * 2.0,
+                angleZ * power
+            );
+            
+            dynamicBody.applyCentralImpulse(impulse);
+            
+            const torque = new Ammo.btVector3(
+                (Math.random() - 0.5) * 50,
+                (Math.random() - 0.5) * 50,
+                (Math.random() - 0.5) * 50
+            );
+            dynamicBody.applyTorqueImpulse(torque);
+            
+            slammer.userData.physicsBody = dynamicBody;
+            slammer.userData.static = false;
+            
+            cameraController.mode = 'FOLLOW';
+            cameraController.follow.target = slammer;
+            
+            setTimeout(() => {
+                if (slammer && slammer.userData.thrown) {
+                    startCameraTransition();
+                }
+            }, 2000);
+            
+            if (navigator.vibrate) {
+                navigator.vibrate(100);
+            }
+        }
+
+        function updatePhysics() {
+            const transform = new Ammo.btTransform();
+            
+            if (slammer && !slammer.userData.static) {
+                slammer.userData.physicsBody.getMotionState().getWorldTransform(transform);
+                const pos = transform.getOrigin();
+                const rot = transform.getRotation();
+                
+                slammer.position.set(pos.x(), pos.y(), pos.z());
+                slammer.quaternion.set(rot.x(), rot.y(), rot.z(), rot.w());
+            }
+            
+            pogs.forEach(pog => {
+                if (!pog.userData.static && !pog.userData.disappearing) {
+                    pog.userData.physicsBody.getMotionState().getWorldTransform(transform);
+                    const pos = transform.getOrigin();
+                    const rot = transform.getRotation();
+                    
+                    pog.position.set(pos.x(), pos.y(), pos.z());
+                    pog.quaternion.set(rot.x(), rot.y(), rot.z(), rot.w());
+                }
+            });
+        }
+
+        function updateCamera() {
+            switch (cameraController.mode) {
+                case 'TRANSITION':
+                    updateCameraTransition();
+                    break;
+                case 'FOLLOW':
+                    updateCameraFollow();
+                    break;
+                case 'STATIC':
+                    break;
+            }
+        }
+
+        function checkFlippedPogs() {
+            let flippedCount = 0;
+            pogs.forEach(pog => {
+                if (!pog.userData.static && !pog.userData.disappearing) {
+                    const normal = new THREE.Vector3(0, 1, 0);
+                    normal.applyQuaternion(pog.quaternion);
+                    
+                    if (normal.y < -0.7 && pog.position.y > 0.1) {
+                        if (!pog.userData.flipped) {
+                            pog.userData.flipped = true;
+                        }
+                        flippedCount++;
+                    }
+                }
+            });
+            document.getElementById('score').textContent = `${flippedCount}/8`;
+        }
+
+        function resetScene() {
+            disappearingPogs.forEach(pog => {
+                scene.remove(pog);
+                if (pog.userData.physicsBody) {
+                    physicsWorld.removeRigidBody(pog.userData.physicsBody);
+                }
+            });
+            disappearingPogs = [];
+            
+            pogs.forEach(pog => {
+                scene.remove(pog);
+                if (pog.userData.physicsBody) {
+                    physicsWorld.removeRigidBody(pog.userData.physicsBody);
+                }
+            });
+            
+            if (slammer) {
+                scene.remove(slammer);
+                if (slammer.userData.physicsBody) {
+                    physicsWorld.removeRigidBody(slammer.userData.physicsBody);
+                }
+            }
+            
+            pogs = [];
+            slammer = null;
+            gameStarted = false;
+            
+            cameraController.mode = 'STATIC';
+            cameraController.transition.active = false;
+            camera.position.set(8, 6, 10);
+            camera.lookAt(0, 2, 0);
+            
+            createPogs();
+            createSlammer();
+            document.getElementById('score').textContent = '0/8';
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            if (physicsWorld) {
+                physicsWorld.stepSimulation(1/60, 10);
+                updatePhysics();
+                updateCamera();
+                
+                if (gameStarted) {
+                    checkFlippedPogs();
+                }
+                
+                updateDisappearingPogs();
+            }
+            
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', function() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        document.addEventListener('gesturestart', function(e) {
+            e.preventDefault();
+        });
+    </script>
+</body>
+</html>
